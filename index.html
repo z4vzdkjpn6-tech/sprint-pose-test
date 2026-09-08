@@ -1,26 +1,55 @@
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><title>Sprint Pose Diagnostic v4</title>
-<style>:root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;color-scheme:light}body{margin:0;background:#f5f5f7;color:#111}main{max-width:900px;margin:auto;padding:18px 12px 50px}h1{font-size:28px}.card{background:#fff;border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 1px 3px #0001}.row{display:flex;gap:8px;flex-wrap:wrap}.file{background:#eee;border-radius:12px;padding:12px 14px;color:#06f;font-weight:650;display:inline-block}input[type=file]{position:absolute;width:1px;height:1px;opacity:0}button{border:0;border-radius:12px;padding:13px 16px;font-size:16px;font-weight:650;background:#111;color:#fff}button:disabled{opacity:.4}.status{margin-top:12px;padding:11px;border-radius:12px;background:#eee}.ok{background:#eaf7ec}.err{background:#fff0f0;color:#900}.note{color:#666;line-height:1.4;font-size:14px}.frame{margin-top:14px}.frame canvas{width:100%;height:auto;display:block;background:#111;border-radius:12px}.cap{font-size:13px;margin-top:6px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:650px){.grid{grid-template-columns:1fr}}</style></head>
-<body><main><h1>🏃‍♂️ Sprint Pose Diagnostic — v5</h1>
-<div class="card"><strong>Purpose:</strong> This version does not try to hide the preprocessing. For every sampled frame it shows <b>the original frame</b>, <b>the exact crop/upscaled image sent to MediaPipe</b>, and <b>the pose result</b>. Your video is processed locally in Safari; there is no video-upload code.</div>
-<div class="card"><h2>Files</h2><label class="file" for="model">Choose .task model</label><input id="model" type="file" accept=".task,application/octet-stream"><div id="mn" class="note">No model selected.</div><br><label class="file" for="vid">Choose sprint video</label><input id="vid" type="file" accept="video/*,.mov,.mp4"><div id="vn" class="note">No video selected.</div><div class="row" style="margin-top:14px"><button id="load" disabled>Load pose model</button><button id="run" disabled>Run diagnostic</button></div><div id="status" class="status">Waiting for files.</div></div>
-<div class="card"><div id="summary" class="note">Nothing analyzed yet.</div><div id="results"></div></div></main>
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sprint Pose Safari V5</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#111;color:#eee;margin:0;padding:14px}
+.panel{background:#1b1b1b;padding:12px;border-radius:12px;margin:10px 0}
+button{padding:10px 14px;border:0;border-radius:10px;margin:5px 3px;font-size:15px}
+canvas{width:100%;height:auto;background:#000;border-radius:8px;margin:7px 0;display:block}
+.small{font-size:13px;color:#bbb;line-height:1.45}#status{white-space:pre-wrap}
+</style></head><body>
+<h2>🏃 Sprint Pose Safari — V5</h2>
+<div class="panel"><b>Past-frame temporal localization</b>
+<div class="small">Each target uses only earlier frames: −0.10, −0.25 and −0.50 s. Their differences create a motion map. The largest coherent moving region is padded and sent to MediaPipe Pose. No fixed running area and no future frames are used.</div></div>
+<div class="panel"><input id="file" type="file" accept="video/*"><br>
+<button id="run">Run V5 diagnostic</button><button id="stop">Stop</button>
+<div id="status">Choose a video.</div><pre id="stats"></pre></div>
+<video id="video" playsinline muted preload="auto" style="display:none"></video>
+<canvas id="target"></canvas><canvas id="motion"></canvas><canvas id="crop"></canvas>
 <script type="module">
-import {FilesetResolver,PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/+esm";
-const $=id=>document.getElementById(id);let mf=null,vf=null,lm=null,url=null;
-function status(t,c=''){const e=$('status');e.textContent=t;e.className='status '+c}function buttons(){$('load').disabled=!(mf&&vf)||!!lm;$('run').disabled=!(lm&&vf)}
-$('model').onchange=()=>{mf=$('model').files?.[0]||null;$('mn').textContent=mf?mf.name:'No model selected.';buttons()};$('vid').onchange=()=>{vf=$('vid').files?.[0]||null;$('vn').textContent=vf?vf.name:'No video selected.';buttons()};
-$('load').onclick=async()=>{try{status('Loading MediaPipe…');const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm');const bytes=new Uint8Array(await mf.arrayBuffer());lm=await PoseLandmarker.createFromOptions(vision,{baseOptions:{modelAssetBuffer:bytes,delegate:'CPU'},runningMode:'IMAGE',numPoses:1,minPoseDetectionConfidence:.15,minPosePresenceConfidence:.15,minTrackingConfidence:.15});status('Pose model loaded. Run the diagnostic.','ok')}catch(e){console.error(e);lm=null;status('Model error: '+e.message,'err')}buttons()};
-function wait(t,n,ms=12000){return new Promise((res,rej)=>{let done=false;const timer=setTimeout(()=>{if(done)return;done=true;t.removeEventListener(n,on);rej(Error('Timed out waiting for '+n))},ms);function on(e){if(done)return;done=true;clearTimeout(timer);t.removeEventListener(n,on);res(e)}t.addEventListener(n,on,{once:true})})}
-async function seek(v,t){if(Math.abs(v.currentTime-t)<.01)return;const p=wait(v,'seeked');v.currentTime=t;await p}
-function draw(out,w,h,res,ox=0,oy=0,ow=w,oh=h){const c=out.getContext('2d');c.clearRect(0,0,w,h);c.drawImage(lastFrame,0,0,w,h);let found=false;let chest=false;const pts=res?.landmarks?.[0];if(pts){found=true; c.lineWidth=Math.max(2,w/250);c.strokeStyle='#00e676';for(const e of PoseLandmarker.POSE_CONNECTIONS){const a=pts[e.start],b=pts[e.end];if(!a||!b||(a.visibility??1)<.15||(b.visibility??1)<.15)continue;c.beginPath();c.moveTo(ox+a.x*ow,oy+a.y*oh);c.lineTo(ox+b.x*ow,oy+b.y*oh);c.stroke()}c.fillStyle='#00e676';for(const p of pts){if((p.visibility??1)<.15)continue;c.beginPath();c.arc(ox+p.x*ow,oy+p.y*oh,Math.max(2.5,w/160),0,Math.PI*2);c.fill()}const a=pts[11],b=pts[12];if(a&&b&&(a.visibility??1)>=.15&&(b.visibility??1)>=.15){chest=true;c.fillStyle='#ff3b30';c.beginPath();c.arc(ox+(a.x+b.x)/2*ow,oy+(a.y+b.y)/2*oh,Math.max(6,w/75),0,Math.PI*2);c.fill()}}return{found,chest}}
-let lastFrame=null;
-$('run').onclick=async()=>{if(!lm||!vf)return;$('run').disabled=true;$('results').innerHTML='';$('summary').textContent='Preparing…';if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(vf);const v=document.createElement('video');v.src=url;v.muted=true;v.playsInline=true;v.preload='auto';try{await wait(v,'loadedmetadata');const w=v.videoWidth,h=v.videoHeight,d=v.duration;status(`Video ${w}×${h}, ${d.toFixed(2)} s. Sampling 8 frames…`,'ok');const full=document.createElement('canvas');full.width=w;full.height=h;const fc=full.getContext('2d');const crop={x:0,y:Math.round(h*.28),width:w,height:Math.round(h*.62)};const ci=document.createElement('canvas');ci.width=Math.round(w*1.6);ci.height=Math.round(crop.height*ci.width/crop.width);const cc=ci.getContext('2d');let cropFound=0,fullFound=0;for(let i=0;i<8;i++){const t=d*i/7;await seek(v,Math.min(t,Math.max(0,d-.03)));fc.drawImage(v,0,0,w,h);lastFrame=full;cc.clearRect(0,0,ci.width,ci.height);cc.drawImage(v,crop.x,crop.y,crop.width,crop.height,0,0,ci.width,ci.height);
-const fullRes=lm.detect(full);const cropRes=lm.detect(ci);const out=document.createElement('div');out.className='frame';const title=document.createElement('div');title.innerHTML=`<b>Frame ${i+1}</b> · ${t.toFixed(2)} s`;out.appendChild(title);const grid=document.createElement('div');grid.className='grid';
-function add(titleText,canvas,cap){const box=document.createElement('div');const h3=document.createElement('div');h3.innerHTML='<b>'+titleText+'</b>';box.appendChild(h3);box.appendChild(canvas);const p=document.createElement('div');p.className='cap';p.textContent=cap;box.appendChild(p);grid.appendChild(box)}
-const orig=document.createElement('canvas');orig.width=w;orig.height=h;orig.getContext('2d').drawImage(full,0,0);add('Original frame',orig,`What Safari decoded: ${w}×${h}`);
-const inp=document.createElement('canvas');inp.width=ci.width;inp.height=ci.height;inp.getContext('2d').drawImage(ci,0,0);add('Exact crop sent to MediaPipe',inp,`Crop: x=${crop.x}, y=${crop.y}, w=${crop.width}, h=${crop.height}; upscaled to ${ci.width}×${ci.height}`);
-const ov=document.createElement('canvas');ov.width=w;ov.height=h;const oi=draw(ov,w,h,cropRes,crop.x,crop.y,crop.width,crop.height);add('Crop detection over original',ov,oi.found? (oi.chest?'Pose + both shoulders found':'Pose found, but no chest proxy'):'No pose found in crop');
-const of=document.createElement('canvas');of.width=w;of.height=h;const fi=draw(of,w,h,fullRes);add('Full-frame detection',of,fi.found?'Pose found in full frame':'No pose found in full frame');
-out.appendChild(grid);$('results').appendChild(out);if(oi.found)cropFound++;if(fi.found)fullFound++;status(`Finished frame ${i+1} of 8…`)}$('summary').innerHTML=`Crop detection: <b>${cropFound}/8</b> frames. Full-frame detection: <b>${fullFound}/8</b> frames. The side-by-side images above show exactly what MediaPipe received.`;status('Diagnostic finished.','ok')}catch(e){console.error(e);status('Diagnostic failed: '+e.message,'err');$('summary').textContent='No results.'}finally{$('run').disabled=false}};
+import {PoseLandmarker,FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22";
+const $=x=>document.getElementById(x),video=$("video"),file=$("file");
+const status=$("status"),stats=$("stats"),target=$("target"),motion=$("motion"),crop=$("crop");
+let stopped=false,landmarker=null;
+const OFF=[.10,.25,.50],N=8,W=180;
+function seek(t){return new Promise((resolve,reject)=>{const ok=()=>{clean();resolve()},bad=()=>{clean();reject(Error("seek failed"))};
+function clean(){video.removeEventListener("seeked",ok);video.removeEventListener("error",bad)}
+video.addEventListener("seeked",ok,{once:true});video.addEventListener("error",bad,{once:true});
+video.currentTime=Math.max(0,Math.min(video.duration,t))})}
+function capture(c){c.width=video.videoWidth;c.height=video.videoHeight;const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(video,0,0,c.width,c.height);return x.getImageData(0,0,c.width,c.height)}
+function gray(img){const h=Math.max(1,Math.round(img.height*W/img.width)),a=document.createElement("canvas"),b=document.createElement("canvas");a.width=W;a.height=h;b.width=img.width;b.height=img.height;b.getContext("2d").putImageData(img,0,0);const x=a.getContext("2d",{willReadFrequently:true});x.drawImage(b,0,0,W,h);const d=x.getImageData(0,0,W,h).data,g=new Uint8Array(W*h);for(let i=0,j=0;i<d.length;i+=4,j++)g[j]=(0.299*d[i]+0.587*d[i+1]+0.114*d[i+2])|0;return{g,w:W,h}}
+function locate(t,pasts){const T=gray(t),a=new Float32Array(T.w*T.h);for(const p of pasts){const P=gray(p);for(let i=0;i<a.length;i++)a[i]+=Math.abs(T.g[i]-P.g[i])}for(let i=0;i<a.length;i++)a[i]/=pasts.length;
+const s=Array.from(a).sort((x,y)=>x-y),thr=Math.max(18,s[Math.floor(.8*s.length)]*.75),m=new Uint8Array(a.length);for(let i=0;i<a.length;i++)if(a[i]>=thr)m[i]=1;
+const seen=new Uint8Array(m.length),qx=new Int32Array(m.length),qy=new Int32Array(m.length);let best=null,areaBest=0;
+for(let y=0;y<T.h;y++)for(let x=0;x<T.w;x++){let k=y*T.w+x;if(!m[k]||seen[k])continue;let h=0,tail=0,area=0,minx=x,maxx=x,miny=y,maxy=y;qx[tail]=x;qy[tail]=y;tail++;seen[k]=1;
+while(h<tail){let cx=qx[h],cy=qy[h];h++;area++;minx=Math.min(minx,cx);maxx=Math.max(maxx,cx);miny=Math.min(miny,cy);maxy=Math.max(maxy,cy);
+for(const [nx,ny] of [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]]){if(nx<0||ny<0||nx>=T.w||ny>=T.h)continue;let q=ny*T.w+nx;if(m[q]&&!seen[q]){seen[q]=1;qx[tail]=nx;qy[tail]=ny;tail++}}}
+if(area>areaBest){areaBest=area;best={minx,maxx,miny,maxy}}}
+if(!best||areaBest<Math.max(12,T.w*T.h*.002))return{found:false,a,T,bestArea:0};
+const sx=t.width/T.w,sy=t.height/T.h;let x0=best.minx*sx,x1=(best.maxx+1)*sx,y0=best.miny*sy,y1=(best.maxy+1)*sy,px=(x1-x0)*.65+30,py=(y1-y0)*.65+30;
+return{found:true,a,T,bestArea:areaBest,x0:Math.max(0,Math.floor(x0-px)),y0:Math.max(0,Math.floor(y0-py)),x1:Math.min(t.width,Math.ceil(x1+px)),y1:Math.min(t.height,Math.ceil(y1+py))}}
+function showMotion(r,t){motion.width=t.width;motion.height=t.height;const c=motion.getContext("2d"),s=document.createElement("canvas");s.width=r.T.w;s.height=r.T.h;const x=s.getContext("2d"),im=x.createImageData(s.width,s.height);let mx=1;for(const v of r.a)mx=Math.max(mx,v);for(let i=0;i<r.a.length;i++){let v=Math.min(255,Math.round(r.a[i]/mx*255));im.data[i*4]=v;im.data[i*4+1]=v;im.data[i*4+2]=v;im.data[i*4+3]=255}x.putImageData(im,0,0);c.drawImage(s,0,0,t.width,t.height);if(r.found){c.strokeStyle="#ff3b30";c.lineWidth=3;c.strokeRect(r.x0,r.y0,r.x1-r.x0,r.y1-r.y0)}}
+function makeCrop(img,r){const tmp=document.createElement("canvas");tmp.width=img.width;tmp.height=img.height;tmp.getContext("2d").putImageData(img,0,0);crop.width=r.x1-r.x0;crop.height=r.y1-r.y0;crop.getContext("2d").drawImage(tmp,r.x0,r.y0,crop.width,crop.height,0,0,crop.width,crop.height)}
+function pose(c,r){if(!r.landmarks?.length)return false;const x=c.getContext("2d");x.fillStyle="#00ff88";for(const p of r.landmarks[0]){x.beginPath();x.arc(p.x*c.width,p.y*c.height,3,0,Math.PI*2);x.fill()}return true}
+async function init(){status.textContent="Loading MediaPipe…";const v=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");return PoseLandmarker.createFromOptions(v,{baseOptions:{modelAssetPath:"./pose_landmarker_full.task",delegate:"CPU"},runningMode:"IMAGE",minPoseDetectionConfidence:.15,minPosePresenceConfidence:.15,minTrackingConfidence:.15,numPoses:1})}
+$("run").onclick=async()=>{if(!file.files.length){status.textContent="Choose a video first.";return}stopped=false;$("run").disabled=true;try{
+if(!landmarker)landmarker=await init();video.src=URL.createObjectURL(file.files[0]);await new Promise((r,j)=>{video.onloadedmetadata=r;video.onerror=j});
+const st=Math.min(1.5,video.duration*.15),en=Math.max(st+.1,video.duration-1.5),times=Array.from({length:N},(_,i)=>st+(en-st)*(i+.5)/N);let mf=0,fp=0,cp=0;
+for(let i=0;i<N&&!stopped;i++){const t=times[i];status.textContent=`V5 target ${i+1}/${N} at ${t.toFixed(2)} s`;
+const past=[];for(const o of OFF){await seek(t-o);past.push(capture(document.createElement("canvas")))}await seek(t);const img=capture(target),r=locate(img,past);showMotion(r,img);
+const full=landmarker.detect(target);fp+=pose(target,full)?1:0;let ok=false;if(r.found){mf++;makeCrop(img,r);ok=pose(crop,landmarker.detect(crop));cp+=ok?1:0}else{crop.width=2;crop.height=2}
+stats.textContent=`Target ${i+1}/${N} | past −0.10/−0.25/−0.50 s\nMotion region: ${r.found?"FOUND":"not found"} | component ${r.bestArea}\nFull-frame pose: ${full.landmarks?.length?"YES":"NO"} | Motion-crop pose: ${r.found?(ok?"YES":"NO"):"—"}\nTotals: motion ${mf}/${i+1} | full ${fp}/${i+1} | crop ${cp}/${i+1}`;await new Promise(r=>setTimeout(r,200))}
+if(!stopped)status.textContent="V5 diagnostic complete."
+}catch(e){console.error(e);status.textContent="Error: "+e.message}finally{$("run").disabled=false}};
+$("stop").onclick=()=>{stopped=true;status.textContent="Stopped."};
 </script></body></html>
