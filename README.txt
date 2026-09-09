@@ -1,23 +1,33 @@
-Sprint Pose Safari — V5 fixed
+SPRINT POSE SAFARI — V6 DIAGNOSTIC
 
-Changes from the broken V5:
-- Restored the exact MediaPipe Tasks Vision 1.0.1 import/wasm setup used by V4.
-- Restored explicit .task model selection and modelAssetBuffer loading.
-- The Full Pose Landmarker model is included in this ZIP as pose_landmarker_full.task.
-- Added visible startup/model errors.
-- Temporal localization uses only past frames: -0.10, -0.25 and -0.50 s.
-- Diagnostic target frames skip approximately 1.5 s at the beginning and end.
-- No fixed running area is assumed.
-- Shows original target, motion map/candidate box, motion crop, pose on motion crop, and full-frame pose.
-- Processing is local in Safari; no video-upload code.
+Purpose:
+Test whether camera-motion compensation + ranked fallback tiles can improve
+MediaPipe Pose detection for a small sprinter filmed with a slightly moving camera.
 
-Use:
-1. Put this folder on an HTTPS host (GitHub Pages works).
+How to use:
+1. Host this folder on HTTPS (for example GitHub Pages).
 2. Open index.html in Safari.
-3. Choose the included pose_landmarker_full.task from Files.
-4. Choose the sprint video.
-5. Tap Load pose model.
-6. Tap Run V5 diagnostic.
+3. Choose the included pose_landmarker_full.task file.
+4. Choose your sprint video.
+5. Tap "Load pose model".
+6. Tap "Run V6 diagnostic".
 
-Note:
-The .task file is bundled for convenience, but Safari web pages cannot silently select a local file from the iPhone Files app. That is why the model picker remains explicit, matching V4.
+V6 changes from V5:
+- Estimates global camera translation between each target and the three past frames.
+- Aligns those past frames before calculating temporal motion.
+- If the compensated motion crop does not produce a pose, tries up to 8 ranked,
+  overlapping fallback tiles.
+- Vertical middle is prioritized.
+- Horizontal tile priority changes with normalized video time.
+- If a previous pose was found, nearby tiles around the previous position are
+  given highest priority.
+- Fallback tiles are enlarged 2x before Pose Landmarker.
+- Full-frame pose is still tested as a diagnostic reference.
+- The first and last ~1.5 s are skipped.
+- Only past frames are used; no future frames.
+- Video processing stays local in Safari; there is no upload code.
+
+Important:
+This is a diagnostic experiment, not the final sprint-timing algorithm.
+The camera-motion model currently assumes that most camera movement can be
+approximated as translation. Rotation/zoom/parallax are not yet compensated.
