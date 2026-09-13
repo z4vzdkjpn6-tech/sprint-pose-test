@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Sprint Pose Diagnostic — V6</title>
+  <title>Sprint Pose Diagnostic — V7</title>
 <style>
 :root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;color-scheme:light}
 body{margin:0;background:#f5f5f7;color:#111}
@@ -26,19 +26,18 @@ button:disabled{opacity:.4}.status{margin-top:12px;padding:11px;border-radius:12
 </head>
 <body>
 <main>
-<h1>🏃‍♂️ Sprint Pose Diagnostic — V6</h1>
+<h1>🏃‍♂️ Sprint Pose Diagnostic — V7</h1>
 
 <div class="card">
 <strong>What this version tests</strong>
 <ul>
-<li>MediaPipe Tasks Vision is restored to the exact <b>1.0.1</b> setup used successfully in V4.</li>
-<li>The pose model is explicitly selected with <b>Choose .task model</b>, just like V4. The same <code>pose_landmarker_full.task</code> is included in this ZIP.</li>
-<li>Uses the same <b>past-frame temporal localization</b> as V5, but first estimates global camera translation and aligns past frames to the target.</li>
-<li>If the motion crop fails, tries <b>ranked fallback tiles</b>: vertical middle is favored, while horizontal priority moves with timeline position and previous successful detections.</li>
-<li>Fallback tiles are enlarged before Pose Landmarker, so a small sprinter occupies more pixels.</li>
-<li>The diagnostic ignores roughly the first and last <b>1.5 s</b> of the video and never uses future frames.</li>
+<li>Uses past-frame, translation-compensated temporal motion to propose multiple candidate regions.</li>
+<li>Runs Pose Landmarker on motion candidates, tracking-guided regions, and large plus smaller fallback tiles.</li>
+<li>Chooses the best candidate by pose structure, visibility, torso reliability, center bias, and past-only tracking consistency—not by motion alone or first detection.</li>
+<li>Tracking predicts from recent past positions, expands when confidence falls, and can broadly reacquire.</li>
+<li>Produces a local, downloadable JSON diagnostic report. Video pixels and video files are never uploaded or retained.</li>
 </ul>
-<div class="note">Everything runs locally in Safari. There is no video-upload code. V6 is a diagnostic experiment, not the final timing algorithm.</div>
+<div class="note">Everything runs locally in Safari. There is no video-upload code. V7 is a diagnostic experiment, not the final chest-line timing algorithm.</div>
 </div>
 
 <div class="card">
@@ -53,8 +52,9 @@ button:disabled{opacity:.4}.status{margin-top:12px;padding:11px;border-radius:12
 <div id="vn" class="note">No video selected.</div>
 <div class="row" style="margin-top:14px">
 <button id="load" disabled>Load pose model</button>
-<button id="run" disabled>Run V6 diagnostic</button>
-<button id="stop" disabled>Stop</button>
+  <button id="run" disabled>Run V7 diagnostic</button>
+  <button id="stop" disabled>Stop</button>
+  <button id="report" disabled>Download JSON report</button>
 </div>
 <div id="status" class="status">Waiting for the .task model and video.</div>
 </div>
@@ -69,7 +69,7 @@ button:disabled{opacity:.4}.status{margin-top:12px;padding:11px;border-radius:12
 import {FilesetResolver,PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/+esm";
 
 const $=id=>document.getElementById(id);
-let modelFile=null,videoFile=null,lm=null,url=null,stopped=false;
+let modelFile=null,videoFile=null,lm=null,url=null,reportUrl=null,lastReport=null,stopped=false;
 const OFFSETS=[0.10,0.25,0.50], TARGETS=8, SMALL_W=180;
 
 function status(text,kind=''){
@@ -108,7 +108,7 @@ $('load').onclick=async()=>{
       minPosePresenceConfidence:0.15,
       minTrackingConfidence:0.15
     });
-    status('Pose model loaded successfully. Ready to run V6.','ok');
+    status('Pose model loaded successfully. Ready to run V7.','ok');
   }catch(e){
     console.error(e);
     lm=null;
@@ -141,9 +141,9 @@ async function seek(video,t){
 function capture(video){
   const c=document.createElement('canvas');
   c.width=video.videoWidth; c.height=video.videoHeight;
-  const x=c.getContext('2d',{willReadFrequently:true});
+   const x=c.getContext('2d');
   x.drawImage(video,0,0,c.width,c.height);
-  return {canvas:c,image:x.getImageData(0,0,c.width,c.height)};
+   return {canvas:c};
 }
 function grayFromImage(img){
   const h=Math.max(1,Math.round(img.height*SMALL_W/img.width));
@@ -227,7 +227,7 @@ function locateFromMotion(targetCanvas,alignedPastCanvases){
 
   const seen=new Uint8Array(mask.length);
   const qx=new Int32Array(mask.length), qy=new Int32Array(mask.length);
-  let best=null,bestArea=0;
+  const components=[];
   for(let y=0;y<T.h;y++)for(let x=0;x<T.w;x++){
     const k=y*T.w+x;
     if(!mask[k]||seen[k])continue;
@@ -245,26 +245,23 @@ function locateFromMotion(targetCanvas,alignedPastCanvases){
         if(mask[q]&&!seen[q]){seen[q]=1;qx[tail]=nx;qy[tail]=ny;tail++;}
       }
     }
-    if(area>bestArea){bestArea=area;best={minx,maxx,miny,maxy};}
+    if(area>=Math.max(8,T.w*T.h*0.001))components.push({minx,maxx,miny,maxy,area});
   }
-  if(!best||bestArea<Math.max(12,T.w*T.h*0.002))
-    return {found:false,acc,T,bestArea:0,threshold};
-
   const sx=targetCanvas.width/T.w, sy=targetCanvas.height/T.h;
-  let x0=best.minx*sx,x1=(best.maxx+1)*sx;
-  let y0=best.miny*sy,y1=(best.maxy+1)*sy;
-  const px=(x1-x0)*0.75+36, py=(y1-y0)*0.75+36;
-  return {
-    found:true,acc,T,bestArea,threshold,
-    x0:Math.max(0,Math.floor(x0-px)),
-    y0:Math.max(0,Math.floor(y0-py)),
-    x1:Math.min(targetCanvas.width,Math.ceil(x1+px)),
-    y1:Math.min(targetCanvas.height,Math.ceil(y1+py))
-  };
+  const candidates=components.sort((a,b)=>b.area-a.area).slice(0,6).map((part,i)=>{
+    const x0=part.minx*sx,x1=(part.maxx+1)*sx,y0=part.miny*sy,y1=(part.maxy+1)*sy;
+    const px=(x1-x0)*0.75+36,py=(y1-y0)*0.75+36;
+    return {x0:Math.max(0,Math.floor(x0-px)),y0:Math.max(0,Math.floor(y0-py)),
+      x1:Math.min(targetCanvas.width,Math.ceil(x1+px)),y1:Math.min(targetCanvas.height,Math.ceil(y1+py)),
+      kind:'motion-'+(i+1),motionArea:part.area};
+  });
+  const best=candidates[0];
+  return Object.assign({found:!!best,acc,T,bestArea:best?.motionArea||0,threshold,candidates},best||{});
 }
 
 function drawMotion(out,r,targetCanvas,shiftInfo){
-  out.width=targetCanvas.width;out.height=targetCanvas.height;
+  const displayScale=Math.min(1,700/targetCanvas.width);
+  out.width=Math.max(2,Math.round(targetCanvas.width*displayScale));out.height=Math.max(2,Math.round(targetCanvas.height*displayScale));
   const c=out.getContext('2d');
   const small=document.createElement('canvas');small.width=r.T.w;small.height=r.T.h;
   const sx=small.getContext('2d');
@@ -277,7 +274,7 @@ function drawMotion(out,r,targetCanvas,shiftInfo){
   sx.putImageData(im,0,0); c.drawImage(small,0,0,out.width,out.height);
   if(r.found){
     c.strokeStyle='#ff3b30';c.lineWidth=Math.max(3,out.width/300);
-    c.strokeRect(r.x0,r.y0,r.x1-r.x0,r.y1-r.y0);
+    c.strokeRect(r.x0*displayScale,r.y0*displayScale,(r.x1-r.x0)*displayScale,(r.y1-r.y0)*displayScale);
   }
   c.fillStyle='#ff9500';c.font=`${Math.max(14,out.width/45)}px sans-serif`;
   c.fillText(`camera shift: ${shiftInfo.dx.toFixed(0)}, ${shiftInfo.dy.toFixed(0)} px`,12,28);
@@ -366,12 +363,75 @@ function tileCrop(source,r,scale=2){
   return makeCropCanvas(source,r,scale);
 }
 
+function rect(x0,y0,x1,y1,kind,priority=0){return {x0:Math.round(x0),y0:Math.round(y0),x1:Math.round(x1),y1:Math.round(y1),kind,priority};}
+function trackedTiles(w,h,prediction,searchScale){
+  if(!prediction)return [];
+  const bw=Math.min(w,Math.max(w*.22,prediction.w*searchScale));
+  const bh=Math.min(h,Math.max(h*.35,prediction.h*searchScale));
+  const out=[];
+  for(const [dx,dy,label] of [[0,0,'track-predicted'],[-.35,0,'track-nearby'],[.35,0,'track-nearby'],[0,-.25,'track-nearby'],[0,.25,'track-nearby']]){
+    const x=Math.max(0,Math.min(w-bw,prediction.x+dx*bw-bw/2));
+    const y=Math.max(0,Math.min(h-bh,prediction.y+dy*bh-bh/2));
+    out.push(rect(x,y,x+bw,y+bh,label,95));
+  }
+  return out;
+}
+function smallerFallbackTiles(w,h){
+  const bw=w*.34,bh=h*.48, ys=[h*.26,h*.50];
+  const out=[];
+  for(const y of ys)for(const f of [.05,.32,.59]){
+    const x=(w-bw)*f;out.push(rect(x,y-bh/2,x+bw,y+bh/2,'small-fallback',35));
+  }
+  return out;
+}
+function uniqueCandidates(list,w,h,limit=14){
+  const clean=[];
+  for(const raw of list){
+    const r=rect(Math.max(0,raw.x0),Math.max(0,raw.y0),Math.min(w,raw.x1),Math.min(h,raw.y1),raw.kind,raw.priority||0);
+    if(r.x1-r.x0<8||r.y1-r.y0<8)continue;
+    if(!clean.some(a=>Math.abs(a.x0-r.x0)<w*.035&&Math.abs(a.y0-r.y0)<h*.035&&Math.abs(a.x1-r.x1)<w*.035))clean.push(r);
+  }
+  return clean.slice(0,limit);
+}
+function poseMetrics(pts,r,w,h,prediction){
+  if(!pts)return {score:0,visibility:0,torso:0,center:null,box:null};
+  let n=0,sum=0,minx=1,miny=1,maxx=0,maxy=0;
+  for(const p of pts){const v=p.visibility??1;if(v>=.20){n++;sum+=v;minx=Math.min(minx,p.x);maxx=Math.max(maxx,p.x);miny=Math.min(miny,p.y);maxy=Math.max(maxy,p.y);}}
+  const vis=n?sum/n:0, coverage=n/33;
+  const sh=[pts[11],pts[12]], hip=[pts[23],pts[24]];
+  const torsoPts=[...sh,...hip];
+  const torso=torsoPts.filter(p=>p&&(p.visibility??1)>=.25).length/4;
+  const cx=r.x0+((minx+maxx)/2)*(r.x1-r.x0),cy=r.y0+((miny+maxy)/2)*(r.y1-r.y0);
+  const bw=Math.max(12,(maxx-minx)*(r.x1-r.x0)),bh=Math.max(12,(maxy-miny)*(r.y1-r.y0));
+  const center=n?{x:cx,y:cy}:null;
+  const vertical=1-Math.min(1,Math.abs(cy/h-.5)/.5); // soft prior only
+  const distance=prediction&&center?Math.hypot(cx-prediction.x,cy-prediction.y)/Math.max(1,Math.hypot(w,h)*.30):0;
+  const temporal=prediction?Math.max(0,1-distance):.5;
+  const human=vis*.32+coverage*.20+torso*.32+vertical*.06+temporal*.10;
+  return {score:Math.round(human*100),visibility:vis,torso,coverage,vertical,temporal,center,box:{x:cx-bw/2,y:cy-bh/2,w:bw,h:bh}};
+}
+function updateTrack(track,metric,t){
+  if(metric.score<45||!metric.center)return;
+  const next={x:metric.center.x,y:metric.center.y,w:metric.box.w,h:metric.box.h,t,score:metric.score};
+  track.history.push(next);if(track.history.length>4)track.history.shift();track.last=next;track.confidence=metric.score;
+}
+function predictTrack(track,t,w,h){
+  if(!track.last)return null;
+  const a=track.history.length>1?track.history[track.history.length-2]:null,b=track.last;
+  const dt=Math.max(.001,b.t-(a?.t??b.t));const ahead=Math.max(0,t-b.t);
+  const vx=a?(b.x-a.x)/dt:0,vy=a?(b.y-a.y)/dt:0;
+  return {x:Math.max(0,Math.min(w,b.x+vx*ahead)),y:Math.max(0,Math.min(h,b.y+vy*ahead)),w:b.w,h:b.h};
+}
+function previewCanvas(source,maxW=700){
+  const s=Math.min(1,maxW/source.width),c=document.createElement('canvas');c.width=Math.max(2,Math.round(source.width*s));c.height=Math.max(2,Math.round(source.height*s));c.getContext('2d').drawImage(source,0,0,c.width,c.height);return c;
+}
+
 
 
 $('run').onclick=async()=>{
   if(!lm||!videoFile)return;
   stopped=false;$('run').disabled=true;$('stop').disabled=false;
-  $('results').innerHTML='';$('summary').textContent='Preparing V6…';
+  $('report').disabled=true;lastReport=null;$('results').innerHTML='';$('summary').textContent='Preparing V7…';
   if(url)URL.revokeObjectURL(url);
   url=URL.createObjectURL(videoFile);
   const v=document.createElement('video');
@@ -383,14 +443,14 @@ $('run').onclick=async()=>{
     const end=Math.max(start+0.1,d-1.5);
     if(d<=3.1)throw Error('Video is too short for the 1.5 s start/end exclusion.');
     const times=Array.from({length:TARGETS},(_,i)=>start+(end-start)*(i+0.5)/TARGETS);
-    status(`Video ${w}×${h}, ${d.toFixed(2)} s.\nAnalyzing ${TARGETS} target frames between ${start.toFixed(2)} and ${end.toFixed(2)} s.\nV6: camera-shift compensation + ranked fallback tiles.`, 'ok');
-
-    let motionFound=0,compPoseFound=0,rawMotionPoseFound=0,fullFound=0,tilePoseFound=0;
-    let previousCenter=null,previousTime=null;
+    status(`Video ${w}×${h}, ${d.toFixed(2)} s.\nAnalyzing ${TARGETS} target frames chronologically.\nV7: multiple motion proposals + pose-quality selection + past-only tracking.`, 'ok');
+    const track={history:[],last:null,confidence:0};
+    const report={version:'V7',createdAt:new Date().toISOString(),privacy:'All video processing was local in the browser; no video was uploaded or retained.',video:{name:videoFile.name,width:w,height:h,durationSeconds:d},settings:{targets:TARGETS,pastOffsets:OFFSETS,smallMotionWidth:SMALL_W},frames:[]};
+    let motionFound=0,selectedFound=0,fullFound=0;
 
     for(let i=0;i<TARGETS&&!stopped;i++){
       const t=times[i];
-      status(`Target ${i+1}/${TARGETS} · ${t.toFixed(2)} s\nAligning past frames −0.10, −0.25, −0.50 s and estimating global camera translation…`);
+      status(`Target ${i+1}/${TARGETS} · ${t.toFixed(2)} s\nAligning past frames; proposing and scoring candidates…`);
       const past=[];
       const shifts=[];
       for(const off of OFFSETS){
@@ -399,7 +459,7 @@ $('run').onclick=async()=>{
         past.push(pc);
       }
       await seek(v,t);
-      const targetCapture=capture(v), targetImage=targetCapture.image, targetCanvas=targetCapture.canvas;
+      const targetCanvas=capture(v).canvas;
 
       /* Camera compensation: estimate one global translation per past frame,
          then align it before temporal differencing. */
@@ -416,76 +476,35 @@ $('run').onclick=async()=>{
 
       const r=locateFromMotion(targetCanvas,aligned);
       if(r.found)motionFound++;
-
       const motionCanvas=document.createElement('canvas');
       drawMotion(motionCanvas,r,targetCanvas,avgShift);
-
       const fullRes=lm.detect(targetCanvas);
       if(fullRes?.landmarks?.length)fullFound++;
-      const fullOverlay=document.createElement('canvas');
-      const fullInfo=drawPoseOverlay(fullOverlay,targetCanvas,fullRes);
-
-      let rawCropCanvas=null,rawCropRes=null,rawCropOverlay=null,rawCropInfo={found:false,chest:false};
-      if(r.found){
-        rawCropCanvas=makeCropCanvas(targetCanvas,r,2);
-        rawCropRes=lm.detect(rawCropCanvas);
-        if(rawCropRes?.landmarks?.length)rawMotionPoseFound++;
-        rawCropOverlay=document.createElement('canvas');
-        rawCropInfo=drawPoseOverlay(rawCropOverlay,rawCropCanvas,rawCropRes);
+      const prediction=predictTrack(track,t,w,h);
+      const expansion=track.confidence>=55?1.2:track.confidence>=45?1.7:2.5;
+      const progress=(t-start)/Math.max(.001,end-start);
+      const candidates=uniqueCandidates([
+        ...trackedTiles(w,h,prediction,expansion),
+        ...r.candidates.map(x=>Object.assign({},x,{priority:80})),
+        ...tileRects(w,h,prediction,progress),
+        ...smallerFallbackTiles(w,h),rect(0,0,w,h,'full-frame',10)
+      ].sort((a,b)=>b.priority-a.priority),w,h,14);
+      const scored=[];
+      for(const candidate of candidates){
+        if(stopped)break;
+        const crop=candidate.kind==='full-frame'?targetCanvas:makeCropCanvas(targetCanvas,candidate,2);
+        const res=lm.detect(crop),metric=poseMetrics(res?.landmarks?.[0],candidate,w,h,prediction);
+        scored.push({candidate,metric,res});
       }
-
-      /* If the compensated motion crop does not produce a pose, search
-         several large overlapping tiles, ranked by prior knowledge. */
-      let tileResults=[];
-      if(!rawCropInfo.found){
-        const progress=(t-start)/Math.max(0.001,end-start);
-        const tiles=tileRects(w,h,previousCenter,progress);
-        for(const tile of tiles){
-          if(stopped)break;
-          const tc=tileCrop(targetCanvas,tile,2);
-          const tr=lm.detect(tc);
-          const ti=document.createElement('canvas');
-          const info=drawPoseOverlay(ti,tc,tr);
-          let center=null;
-          if(info.found&&info.landmarks){
-            let sx=0,sy=0,n=0;
-            for(const p of info.landmarks){
-              if((p.visibility??1)<0.25)continue;
-              sx+=p.x;sy+=p.y;n++;
-            }
-            if(n)center={x:tile.x0+(sx/n)*(tile.x1-tile.x0),y:tile.y0+(sy/n)*(tile.y1-tile.y0)};
-          }
-          tileResults.push({tile,canvas:tc,overlay:ti,info,center});
-          if(info.found){
-            tilePoseFound++;
-            previousCenter=center||{x:(tile.x0+tile.x1)/2,y:(tile.y0+tile.y1)/2};
-            previousTime=t;
-            break;
-          }
-        }
-      }
-
-      if(rawCropInfo.found){
-        const pts=rawCropRes?.landmarks?.[0];
-        if(pts){
-          let sx=0,sy=0,n=0;
-          for(const p of pts){
-            if((p.visibility??1)<0.25)continue;
-            sx+=r.x0+p.x*(r.x1-r.x0); sy+=r.y0+p.y*(r.y1-r.y0); n++;
-          }
-          if(n){previousCenter={x:sx/n,y:sy/n};previousTime=t;}
-        }
-        compPoseFound++;
-      }else if(fullInfo.found&&!previousCenter){
-        const pts=fullRes?.landmarks?.[0];
-        if(pts){
-          let sx=0,sy=0,n=0;
-          for(const p of pts){
-            if((p.visibility??1)<0.25)continue;sx+=p.x*w;sy+=p.y*h;n++;
-          }
-          if(n){previousCenter={x:sx/n,y:sy/n};previousTime=t;}
-        }
-      }
+      scored.sort((a,b)=>b.metric.score-a.metric.score);
+      const chosen=scored[0];
+      if(chosen?.metric.score>=45){selectedFound++;updateTrack(track,chosen.metric,t);}
+      else track.confidence=Math.max(0,track.confidence-18);
+      const chosenOverlay=document.createElement('canvas');
+      const chosenSource=chosen?.candidate.kind==='full-frame'?targetCanvas:chosen?makeCropCanvas(targetCanvas,chosen.candidate,2):targetCanvas;
+      const chosenInfo=chosen?drawPoseOverlay(chosenOverlay,chosenSource,chosen.res):{found:false};
+      if(fullRes?.landmarks?.length)fullFound++;
+      report.frames.push({index:i+1,timeSeconds:+t.toFixed(3),cameraShift:{x:+avgShift.dx.toFixed(1),y:+avgShift.dy.toFixed(1)},motionCandidateCount:r.candidates.length,tracking:{predicted:prediction,confidence:track.confidence},selected:chosen?{kind:chosen.candidate.kind,score:chosen.metric.score,visibility:+chosen.metric.visibility.toFixed(3),torso:+chosen.metric.torso.toFixed(3),center:chosen.metric.center}:null,candidates:scored.map(s=>({kind:s.candidate.kind,score:s.metric.score,visibility:+s.metric.visibility.toFixed(3),torso:+s.metric.torso.toFixed(3),box:{x:s.candidate.x0,y:s.candidate.y0,w:s.candidate.x1-s.candidate.x0,h:s.candidate.y1-s.candidate.y0}}))});
 
       const frame=document.createElement('div');frame.className='frame';
       const title=document.createElement('div');
@@ -493,57 +512,30 @@ $('run').onclick=async()=>{
       frame.appendChild(title);
       const grid=document.createElement('div');grid.className='grid';
 
-      const orig=document.createElement('canvas');orig.width=w;orig.height=h;
-      orig.getContext('2d').drawImage(targetCanvas,0,0);
-      addPanel(grid,'Original target frame',orig,`Decoded video frame at ${t.toFixed(2)} s.`);
+      addPanel(grid,'Original target frame',previewCanvas(targetCanvas),`Decoded frame at ${t.toFixed(2)} s. Display preview is downscaled to conserve Safari memory.`);
 
       addPanel(grid,'Compensated motion map',motionCanvas,
         r.found?`Largest post-alignment motion component: ${r.bestArea} small pixels. Average camera shift ≈ ${avgShift.dx.toFixed(0)}×${avgShift.dy.toFixed(0)} px.`:
         `No sufficiently coherent moving component after camera compensation. Average camera shift ≈ ${avgShift.dx.toFixed(0)}×${avgShift.dy.toFixed(0)} px.`);
 
-      if(r.found){
-        addPanel(grid,'Compensated motion crop ×2',rawCropCanvas,
-          `Crop x=${r.x0}, y=${r.y0}, w=${r.x1-r.x0}, h=${r.y1-r.y0}; enlarged 2× for Pose.`);
-        addPanel(grid,'Pose on compensated motion crop',rawCropOverlay,
-          rawCropInfo.found?(rawCropInfo.chest?'Pose + shoulder midpoint found.':'Pose found, but shoulder midpoint not available.'):'No pose found — fallback tiles were tried.');
-      }else{
-        addPanel(grid,'Compensated motion crop','', 'No crop; fallback tiles were tried.');
-      }
-
-      if(tileResults.length){
-        const tileBox=document.createElement('div');tileBox.style.gridColumn='1 / -1';
-        const th=document.createElement('div');th.innerHTML='<b>Fallback tile attempts</b>';tileBox.appendChild(th);
-        tileResults.forEach((tr,j)=>{
-          const row=document.createElement('div');row.style.marginTop='8px';
-          row.appendChild(tr.overlay);
-          tr.overlay.style.width='100%';tr.overlay.style.height='auto';tr.overlay.style.borderRadius='10px';
-          const cap=document.createElement('div');cap.className='cap';
-          cap.textContent=`#${j+1} · ${tr.tile.kind} · ${tr.info.found?'POSE FOUND':'no pose'} · box x=${tr.tile.x0}, y=${tr.tile.y0}, w=${tr.tile.x1-tr.tile.x0}, h=${tr.tile.y1-tr.tile.y0}`;
-          row.appendChild(cap);tileBox.appendChild(row);
-        });
-        grid.appendChild(tileBox);
-      }else{
-        addPanel(grid,'Fallback tiles','',rawCropInfo.found?'Not needed: compensated motion crop produced a pose.':'No tile attempts were completed.');
-      }
-
-      addPanel(grid,'Full-frame pose detection',fullOverlay,
-        fullInfo.found?(fullInfo.chest?'Pose + shoulder midpoint found.':'Pose found, but shoulder midpoint not available.'):'No pose found in full frame.');
+      addPanel(grid,'Best pose candidate',previewCanvas(chosenOverlay),chosen?`${chosen.candidate.kind} · score ${chosen.metric.score}/100 · visibility ${chosen.metric.visibility.toFixed(2)} · torso ${chosen.metric.torso.toFixed(2)}${chosenInfo.chest?' · shoulder midpoint available.':''}`:'No candidate result.');
+      addPanel(grid,'Candidate ranking','',scored.slice(0,5).map((s,j)=>`#${j+1} ${s.candidate.kind}: ${s.metric.score}/100`).join(' · ')||'No candidates completed.');
 
       frame.appendChild(grid);$('results').appendChild(frame);
 
       $('summary').innerHTML=
         `Progress: <b>${i+1}/${TARGETS}</b> · `+
-        `compensated motion region ${motionFound}/${i+1} · `+
-        `compensated-crop pose ${compPoseFound}/${i+1} · `+
-        `fallback-tile pose ${tilePoseFound}/${i+1} · `+
+        `motion proposals ${motionFound}/${i+1} · `+
+        `selected reliable pose ${selectedFound}/${i+1} · `+
         `full-frame pose ${fullFound}/${i+1}.`;
 
       await new Promise(r=>setTimeout(r,80));
     }
 
     if(!stopped){
-      $('summary').innerHTML+=`<br><br><b>Diagnostic finished.</b> V6 used only past frames. Fallback tiles were ranked using vertical center bias, timeline position, and previous detections.`;
-      status('V6 diagnostic finished.','ok');
+      report.completed=true;report.summary={motionFrames:motionFound,reliableSelectedFrames:selectedFound,fullFramePoses:fullFound};lastReport=report;$('report').disabled=false;
+      $('summary').innerHTML+=`<br><br><b>Diagnostic finished.</b> V7 used only current and past frames; it evaluated multiple candidates and selected by pose quality plus past-only tracking consistency.`;
+      status('V7 diagnostic finished. Download the local JSON report if wanted.','ok');
     }
   }catch(e){
     console.error(e);
@@ -552,6 +544,13 @@ $('run').onclick=async()=>{
   }finally{
     stopped=false;$('run').disabled=!(lm&&videoFile);$('stop').disabled=true;
   }
+};
+
+$('report').onclick=()=>{
+  if(!lastReport)return;
+  if(reportUrl)URL.revokeObjectURL(reportUrl);
+  reportUrl=URL.createObjectURL(new Blob([JSON.stringify(lastReport,null,2)],{type:'application/json'}));
+  const a=document.createElement('a');a.href=reportUrl;a.download='sprint-pose-v7-diagnostic.json';a.click();
 };
 
 $('stop').onclick=()=>{stopped=true;status('Stopping after the current operation…');};

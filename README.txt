@@ -1,8 +1,9 @@
-SPRINT POSE SAFARI — V6 DIAGNOSTIC
+SPRINT POSE SAFARI — V7 DIAGNOSTIC
 
 Purpose:
-Test whether camera-motion compensation + ranked fallback tiles can improve
-MediaPipe Pose detection for a small sprinter filmed with a slightly moving camera.
+Test whether camera-motion-compensated, past-frame candidate proposals plus
+human-like MediaPipe Pose scoring can acquire and track a small sprinter filmed
+with a slightly moving camera.
 
 How to use:
 1. Host this folder on HTTPS (for example GitHub Pages).
@@ -10,24 +11,29 @@ How to use:
 3. Choose the included pose_landmarker_full.task file.
 4. Choose your sprint video.
 5. Tap "Load pose model".
-6. Tap "Run V6 diagnostic".
+6. Tap "Run V7 diagnostic".
+7. Optionally tap "Download JSON report" after the run.
 
-V6 changes from V5:
-- Estimates global camera translation between each target and the three past frames.
-- Aligns those past frames before calculating temporal motion.
-- If the compensated motion crop does not produce a pose, tries up to 8 ranked,
-  overlapping fallback tiles.
-- Vertical middle is prioritized.
-- Horizontal tile priority changes with normalized video time.
-- If a previous pose was found, nearby tiles around the previous position are
-  given highest priority.
-- Fallback tiles are enlarged 2x before Pose Landmarker.
-- Full-frame pose is still tested as a diagnostic reference.
-- The first and last ~1.5 s are skipped.
-- Only past frames are used; no future frames.
-- Video processing stays local in Safari; there is no upload code.
+V7 changes from V6:
+- Estimates global camera translation between each target and three past frames,
+  then aligns those past frames before temporal differencing.
+- Motion creates up to six candidate regions; motion does not choose the runner.
+- A past-only tracker predicts the next search region from recent reliable poses.
+  Its confidence controls tight search, gradual expansion, and broad reacquisition.
+- MediaPipe evaluates tracking-guided candidates, each motion candidate, large
+  fallback tiles, smaller fallback tiles, and a full-frame reference.
+- Candidates are scored for landmark visibility, landmark coverage, torso/shoulder/
+  hip reliability, a soft vertical-center prior, and temporal consistency.
+- The highest scoring candidate is selected; the tracker updates only at >=45/100.
+- Displayed canvases are downscaled previews and no video-frame image data is kept.
+- A downloadable report contains diagnostic measurements only, never video pixels.
+- The first and last ~1.5 s are skipped. Only current and past frames are used.
 
-Important:
-This is a diagnostic experiment, not the final sprint-timing algorithm.
-The camera-motion model currently assumes that most camera movement can be
-approximated as translation. Rotation/zoom/parallax are not yet compensated.
+Privacy:
+Video and the selected model remain in the browser. There is no upload code and
+the report contains no video frames, image data, landmarks, or video blob.
+
+Important limitations:
+This is a diagnostic experiment, not the final chest-line timing algorithm.
+Camera compensation assumes dominant translation; rotation, zoom, severe blur,
+occlusion, and parallax can still reduce motion proposals and pose reliability.
